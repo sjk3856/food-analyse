@@ -180,7 +180,7 @@
           </div>
         </div>
 
-        <!-- Quick Sample Chips (Horizontal Scrolling on mobile) -->
+        <!-- Quick Sample Chips -->
         <div>
           <span class="block text-[11px] font-semibold text-slate-500 mb-1.5">💡 빠른 테스트 예시:</span>
           <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
@@ -364,7 +364,7 @@
       </div>
 
       <div class="text-xs text-slate-600 space-y-2 leading-relaxed">
-        <p>Google AI Studio에서 무료로 발급받은 Gemini API 키를 입력하시면 내 브라우저에서 직접 AI가 분석합니다.</p>
+        <p>Google AI Studio에서 발급받은 최신 Gemini API 키를 입력하시면 내 브라우저에서 직접 AI가 분석합니다.</p>
         <p class="text-[11px] text-slate-400 bg-slate-50 p-2 rounded-lg border border-slate-100">
           🔒 <strong>안내:</strong> 키는 본인 스마트폰/PC의 브라우저(`localStorage`)에만 저장되며 외부 서버로 전송되지 않습니다.
         </p>
@@ -461,7 +461,7 @@
     }
     updateApiKeyStatus();
 
-    // Mobile Canvas Resizer: Prevents browser crash on high-res camera photos
+    // Mobile Canvas Resizer
     imageInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -478,7 +478,7 @@
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const maxDim = 960; // Max 960px for fast mobile upload
+          const maxDim = 960;
 
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -555,7 +555,6 @@
       }
     });
 
-    // Close on backdrop click
     window.addEventListener('click', (e) => {
       if (e.target === apiKeyModal) apiKeyModal.classList.add('hidden');
       if (e.target === historyModal) historyModal.classList.add('hidden');
@@ -573,8 +572,6 @@
       errorBox.classList.add('hidden');
       resultContainer.classList.add('hidden');
       loadingState.classList.remove('hidden');
-
-      // Scroll to loading indicator
       loadingState.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
       try {
@@ -584,7 +581,6 @@
         if (apiKey && apiKey.trim().length > 10) {
           data = await callGeminiAPI(foodName, currentBase64Image, apiKey.trim());
         } else {
-          // Knowledge-base simulation fallback
           await new Promise(r => setTimeout(r, 600));
           data = generateLocalMedicalAnalysis(foodName);
         }
@@ -600,8 +596,15 @@
       }
     });
 
+    // Supported modern models with fallback order
+    const CANDIDATE_MODELS = [
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-2.5-pro'
+    ];
+
     async function callGeminiAPI(foodName, base64Img, apiKey) {
-      const prompt = `당신은 대한민국 임상영양사 및 식품안전 전문의입니다. 사용자가 전달한 음식 사진이나 음식명("${foodName || '사진 속 음식'}")을 분석하여 아래 JSON 규격으로만 응답하세요. 코드블록 마크다운(\`\`\`json) 없이 순수 JSON만 반환하세요:
+      const prompt = `당신은 대한민국 임상영양사 및 식품안전 전문의입니다. 사용자가 전달한 음식 사진이나 음식명("${foodName || '사진 속 음식'}")을 분석하여 아래 JSON 규격으로만 응답하세요. 코드블록 마크다운없이 순수 JSON만 반환하세요:
 {
   "foodName": "판별된 대표 음식명",
   "category": "음식 분류 (예: 찌개/탕류, 절임류 등)",
@@ -643,29 +646,52 @@
         });
       }
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            temperature: 0.1,
-            response_mime_type: "application/json"
-          }
-        })
+      const requestBody = JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature: 0.1,
+          response_mime_type: "application/json"
+        }
       });
 
-      if (!response.ok) {
-        const errObj = await response.json().catch(() => ({}));
-        throw new Error(errObj.error?.message || `API 호출 에러 (HTTP ${response.status})`);
+      let lastError = null;
+
+      // Model fallback loop to avoid 404 Model Not Found
+      for (const model of CANDIDATE_MODELS) {
+        try {
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: requestBody
+          });
+
+          if (!response.ok) {
+            const errObj = await response.json().catch(() => ({}));
+            const msg = errObj.error?.message || `HTTP ${response.status}`;
+            // If model is not found, attempt next model candidate
+            if (response.status === 404 || msg.includes('not found')) {
+              lastError = new Error(`[${model}] 모델 미지원: ${msg}`);
+              continue;
+            }
+            throw new Error(msg);
+          }
+
+          const jsonRes = await response.json();
+          let rawText = jsonRes.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!rawText) throw new Error("Gemini AI의 응답 데이터가 비어 있습니다.");
+
+          rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+          return JSON.parse(rawText);
+        } catch (err) {
+          lastError = err;
+          // If network error or non-404, break or fallback
+          if (!err.message?.includes('not found') && !err.message?.includes('404')) {
+            throw err;
+          }
+        }
       }
 
-      const jsonRes = await response.json();
-      let rawText = jsonRes.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!rawText) throw new Error("Gemini AI의 응답 데이터가 비어 있습니다.");
-
-      rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
-      return JSON.parse(rawText);
+      throw lastError || new Error("호환 가능한 Gemini 모델을 찾을 수 없습니다. API 키를 다시 확인해 주세요.");
     }
 
     function generateLocalMedicalAnalysis(query) {
@@ -848,7 +874,6 @@ ${currentAnalysisData.contraindicated.map(c => `- ${c.group} [${c.level}]: ${c.r
 [💡 주의사항]
 ${currentAnalysisData.precautions.map(p => `• ${p}`).join('\n')}`;
 
-      // Fallback-safe clipboard copy
       const ta = document.createElement('textarea');
       ta.value = text;
       document.body.appendChild(ta);
